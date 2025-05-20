@@ -126,6 +126,27 @@ with tab2:
             date_column = [i for i in summarised_final_result.columns if 'date' in i.lower()]
             summarised_final_result.drop(date_column, axis=1, inplace=True)
 
+            # Exploring teh data for the summarised result of the initial balance summary
+            summary_of_summarised = summarised_final_result.drop('Period', axis=1)
+            cols_summarised = [i for i in summary_of_summarised.columns]
+            result_df_final  = {}
+            in_result = []
+            out_result = []
+            for i in cols_summarised:
+                if 'in' in i.lower():
+                    mean_result = summary_of_summarised[i].mean()
+                    result_df_final[i] = mean_result
+                    in_result.append(mean_result)
+                else:
+                    mean_result = summary_of_summarised[i].mean() * -1
+                    result_df_final[i] = mean_result
+                    out_result.append(mean_result)
+            conclusive_df_balance = pd.DataFrame(result_df_final, index=[0])
+            conclusive_df_balance['Balance']  = conclusive_df_balance.sum(axis=1)[0]
+            in_flow_bal = sum(in_result)
+            out_flow_bal= sum(out_result)
+            bal_result = in_flow_bal + out_flow_bal
+
 
             ######### Calculating summary table
             inflow_column = [ i for i in summarised_final_result.columns if 'in' in i.lower()]
@@ -137,9 +158,9 @@ with tab2:
             period = summarised_final_result['Period']
             balance_df_summarised = pd.DataFrame({'period':period,'Inflow Balance': inflow_balance, 'Outflow Balance': outflow_balance,'Balance':data_balance})
             #####Data scalar Result
-            inflow_average = round(inflow_balance.mean(), 2)
-            outflow_average = round(outflow_balance.mean(), 2)
-            balance_average = round(inflow_average - outflow_average,2)
+            inflow_average = round(in_flow_bal, 2)
+            outflow_average = round(out_flow_bal, 2)
+            balance_average = round(bal_result,2)
 
 
 
@@ -170,9 +191,12 @@ with tab2:
 
             st.dataframe(summarised_final_result)
 
+
+
             st.markdown('---' * 20)
             st.markdown(f'#### Inflow, Outflow and Balance Summary')
-            st.dataframe(balance_df_summarised)
+            st.dataframe(conclusive_df_balance)
+
         except Exception as e:
             st.warning('Error processing the file. Please make sure it contains valid flow meter data.')
             st.error(f'Details: {str(e)}')
