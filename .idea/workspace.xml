@@ -5,19 +5,7 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="ac6f2b0b-0535-45fa-aadf-c2fb5e7586e5" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/MX16_DATA.csv" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Trunkmain data/CX01.csv" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Trunkmain data/CX52.csv" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Trunkmain data/CX55.csv" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Trunkmain data/HC03.csv" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Trunkmain data/HX01.csv" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Trunkmain data/HX11.csv" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Trunkmain data/MX16.csv" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Trunkmain data/tx11.csv" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tm_area.csv" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/trunk_main_app.py" beforeDir="false" afterPath="$PROJECT_DIR$/trunk_main_app.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
