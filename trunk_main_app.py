@@ -208,7 +208,7 @@ with tab2:
             # </div>
             # """, unsafe_allow_html=True)
             st.write(f':rainbow[Computation Type  : {computation_level}]')
-            if computation_level.lower() == 'base computation':
+            if computation_level.lower() == '***base computation***':
                 with border1:
                     st.subheader('Trunk Main Uploaded')
                     st.write(f'#### {uploaded_file.name.strip(".csv")}')
