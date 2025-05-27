@@ -4,11 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="ac6f2b0b-0535-45fa-aadf-c2fb5e7586e5" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/MX16_DATA.csv" beforeDir="false" afterPath="$PROJECT_DIR$/MX16_DATA.csv" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/trunk_main_app.py" beforeDir="false" afterPath="$PROJECT_DIR$/trunk_main_app.py" afterDir="false" />
-    </list>
+    <list default="true" id="ac6f2b0b-0535-45fa-aadf-c2fb5e7586e5" name="Changes" comment="" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
