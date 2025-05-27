@@ -1,0 +1,973 @@
+######Original code for tm_downloads
+
+import numpy as np
+import streamlit as st
+import pandas as pd
+import time
+import os
+import datetime
+import seaborn as sns
+import matplotlib.pyplot as plt
+from datetime import timedelta
+import re
+
+st.set_page_config(layout="wide",
+                   page_title='Trunk Main Analysis',
+                   initial_sidebar_state="expanded",
+                   page_icon="💧")
+
+st.subheader('Trunk Main Analysis')
+st.markdown('---' * 20)
+
+tab2, tab3, tab4, tab5 = st.tabs(
+    ['Trunk Main Balance Calculation - Import', 'Trunk Main Balance Calculation - All', 'Predictive Modelling',
+     'Chart analysis'])
+
+with tab2:
+    # Check if directory exists
+    data_dir = 'Trunkmain data'
+    if not os.path.exists(data_dir):
+        st.error(f"Directory '{data_dir}' not found. Please ensure the data directory exists.")
+        st.stop()
+
+    # Get list of CSV files
+    try:
+        file_data_stored = [f for f in os.listdir(data_dir) if f.endswith('.csv')]
+        if not file_data_stored:
+            st.warning(f"No CSV files found in '{data_dir}' directory.")
+            st.stop()
+    except Exception as e:
+        st.error(f"Error reading directory: {str(e)}")
+        st.stop()
+
+    # Initialize the consolidated dataframe outside the loop
+    tm_calc_all = pd.DataFrame()
+
+    # Add sidebar controls (these should be outside the loop)
+    st.sidebar.subheader("Analysis Parameters")
+
+    # We'll use a sample file to get date ranges, or use default values
+    sample_dates = None
+    try:
+        sample_file = pd.read_csv(os.path.join(data_dir, file_data_stored[0]))
+        if 'Date of Reading' in sample_file.columns:
+            sample_file['Date of Reading'] = pd.to_datetime(sample_file['Date of Reading'], dayfirst=True,
+                                                            errors='coerce')
+            sample_dates = sample_file['Date of Reading'].dropna()
+    except:
+        pass
+
+    # Set default date range
+    if sample_dates is not None and not sample_dates.empty:
+        default_start = sample_dates.min().date()
+        default_end = sample_dates.max().date()
+    else:
+        default_start = datetime.date.today() - timedelta(days=365)
+        default_end = datetime.date.today()
+
+    start_date = st.sidebar.date_input(
+        "Filter Start Date",
+        value=default_start,
+    )
+    end_date = st.sidebar.date_input(
+        "Filter End Date",
+        value=default_end,
+    )
+
+    st.sidebar.markdown('---' * 20)
+
+    # Interval slider in the sidebar
+    interval_days = st.sidebar.slider(
+        "Select Interval (Days)",
+        min_value=30,
+        max_value=720,
+        step=30,
+        value=30,
+    )
+
+    computation_level = st.sidebar.radio(
+        ':rainbow[Choose Computation Level]',
+        ['Base Computation', 'Force Computation'],
+        captions=[
+            'This computes only if all the meters have data',
+            'This forces computation irrespective of whether a meter(s) is working'
+        ]
+    )
+
+    st.write(f':rainbow[Computation Type: {computation_level}]')
+    st.write(f"Processing {len(file_data_stored)} files...")
+
+    # Progress bar
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    # Process each file
+    for file_idx, filename in enumerate(file_data_stored):
+        try:
+            status_text.text(f'Processing {filename}... ({file_idx + 1}/{len(file_data_stored)})')
+            progress_bar.progress((file_idx + 1) / len(file_data_stored))
+
+            sub_tm_name = filename.replace('.csv', '')
+            path_file = os.path.join(data_dir, filename)
+
+            # Read CSV file into a dataframe
+            df = pd.read_csv(path_file)
+
+            # Validate required columns
+            if 'Date of Reading' not in df.columns:
+                st.warning(f"File '{filename}' does not contain 'Date of Reading' column. Skipping...")
+                continue
+
+            # Clean and parse datetime column
+            df['Date of Reading'] = pd.to_datetime(df['Date of Reading'], dayfirst=True, errors='coerce')
+            df = df.dropna(subset=['Date of Reading'])  # Remove invalid dates
+
+            if df.empty:
+                st.warning(f"File '{filename}' has no valid date entries. Skipping...")
+                continue
+
+            df = df.sort_values('Date of Reading').reset_index(drop=True)
+
+            # Apply date filter on dataframe
+            filtered_df = df[
+                (df['Date of Reading'] >= pd.to_datetime(start_date)) &
+                (df['Date of Reading'] <= pd.to_datetime(end_date))
+                ]
+
+            if filtered_df.empty:
+                st.warning(f"No data in date range for file '{filename}'. Skipping...")
+                continue
+
+            # Create a copy of the filtered DataFrame
+            base_df = filtered_df.copy()
+            base_df_columns = base_df.columns
+
+            # Select relevant columns (with "in" / "out" or "date")
+            col_names_selected = [
+                col for col in base_df_columns
+                if 'in' in col.lower() or 'out' in col.lower() or 'date' in col.lower() or 'cus' in col.lower()
+            ]
+
+            if len(col_names_selected) <= 1:  # Only date column
+                st.warning(f"No flow meter columns found in '{filename}'. Skipping...")
+                continue
+
+            selected_df = base_df[col_names_selected].copy()
+
+            # Parse and extract date column
+            date_column = [col for col in selected_df.columns if 'date' in col.lower()]
+            if date_column:
+                selected_df['date'] = selected_df[date_column[0]].dt.date
+            else:
+                st.warning(f"No date column found in '{filename}'. Skipping...")
+                continue
+
+            # Initialize variables for summarization
+            start_date_filter = pd.to_datetime(start_date)
+            summarised_final_result = pd.DataFrame()
+
+            # Summarize data based on intervals
+            while start_date_filter <= pd.to_datetime(end_date):
+                current_end_date = start_date_filter + timedelta(days=interval_days)
+                filtering_data = selected_df[
+                    (selected_df['date'] >= start_date_filter.date()) &
+                    (selected_df['date'] <= current_end_date.date())
+                    ]
+
+                if not filtering_data.empty:
+                    # Only include numeric columns for statistics
+                    numeric_cols = filtering_data.select_dtypes(include=[np.number]).columns
+                    if len(numeric_cols) > 0:
+                        sub_data_summarised = filtering_data[numeric_cols].describe()
+                        mean_result = sub_data_summarised.loc['mean']
+
+                        # Convert summary to a DataFrame
+                        summary_df = pd.DataFrame(mean_result).T
+                        summary_df['Period'] = f'{start_date_filter.date()} to {current_end_date.date()}'
+                        summarised_final_result = pd.concat([summarised_final_result, summary_df], ignore_index=True)
+
+                start_date_filter = current_end_date + timedelta(days=1)
+
+            if summarised_final_result.empty:
+                st.warning(f"No data to summarize for '{filename}'. Skipping...")
+                continue
+
+            # Finalize summarised dataframe
+            summarised_final_result.columns = [
+                col.capitalize() if col != 'Period' else col
+                for col in summarised_final_result.columns
+            ]
+
+            # Remove date columns from summary
+            date_columns = [i for i in summarised_final_result.columns if 'date' in i.lower()]
+            if date_columns:
+                summarised_final_result = summarised_final_result.drop(date_columns, axis=1)
+
+            # Exploring the data for the summarised result of the initial balance summary
+            summary_of_summarised = summarised_final_result.drop('Period', axis=1, errors='ignore')
+            cols_summarised = list(summary_of_summarised.columns)
+            result_df_final = {}
+            in_result = []
+            in_meters_status = []
+            out_result = []
+            out_meters_status = []
+
+            for col in cols_summarised:
+                mean_val = summary_of_summarised[col].mean()
+
+                if re.search(r'\(in\)', col, re.IGNORECASE):  # Case-insensitive match
+                    result_df_final[col] = mean_val
+                    in_result.append(mean_val)
+                    if pd.isna(mean_val):
+                        in_meters_status.append(f'{col} - not working')
+                    else:
+                        in_meters_status.append(f'{col} - working')
+                else:
+                    # Assume outflow columns (multiply by -1 for balance calculation)
+                    adjusted_val = mean_val * -1 if not pd.isna(mean_val) else mean_val
+                    result_df_final[col] = adjusted_val
+                    out_result.append(adjusted_val)
+                    if pd.isna(mean_val):
+                        out_meters_status.append(f'{col} - not working')
+                    else:
+                        out_meters_status.append(f'{col} - working')
+
+            # Handle computation level
+            if computation_level == 'Base Computation':
+                # Only compute if all meters have data
+                in_flow_bal = np.sum(in_result) if in_result and not any(pd.isna(in_result)) else np.nan
+                out_flow_bal = np.sum(out_result) if out_result and not any(pd.isna(out_result)) else np.nan
+            else:
+                # Force computation (ignore NaN values)
+                in_flow_bal = np.nansum(in_result) if in_result else 0
+                out_flow_bal = np.nansum(out_result) if out_result else 0
+
+            # Calculate balance
+            if pd.isna(in_flow_bal) or pd.isna(out_flow_bal):
+                bal_figure = np.nan
+            else:
+                bal_figure = round(in_flow_bal + out_flow_bal, 3)
+
+            # Create conclusive balance dataframe
+            conclusive_df_balance = pd.DataFrame(result_df_final, index=[0])
+
+            if pd.isna(bal_figure):
+                balance_status = "Meter is not working"
+            else:
+                balance_status = bal_figure
+
+            conclusive_df_balance['Balance'] = balance_status
+            conclusive_df_balance['scheme_name'] = sub_tm_name
+
+            # Extract only the columns we need for the consolidated view
+            concluded_df = conclusive_df_balance[['scheme_name', 'Balance']].copy()
+
+            # Append to consolidated dataframe
+            tm_calc_all = pd.concat([tm_calc_all, concluded_df], ignore_index=True)
+
+            # Format results for display
+            in_bal_calc = ('A meter or two computing the inlet flow have issues'
+                           if pd.isna(in_flow_bal) else round(in_flow_bal, 3))
+            out_bal_calc = ('A meter or two computing the outlet flow have issues'
+                            if pd.isna(out_flow_bal) else round(out_flow_bal, 3))
+            bal_result = ("A meter or two do not have any data, making the balance computation inconclusive. "
+                          "You can still 'Force Computation' to calculate the balance nevertheless"
+                          if pd.isna(bal_figure) else bal_figure)
+
+
+
+
+        except Exception as e:
+            st.error(f'Error processing file "{filename}": {str(e)}')
+            continue
+
+    # Clear progress indicators
+    progress_bar.empty()
+    status_text.empty()
+
+    # Display consolidated results
+    if not tm_calc_all.empty:
+        st.markdown('## 📊 Consolidated Results - All Trunk Mains')
+        st.markdown(f'#### Summary of {len(tm_calc_all)} Trunk Main(s)')
+        st.dataframe(tm_calc_all, use_container_width=True)
+
+        # Summary statistics
+        numeric_balances = pd.to_numeric(tm_calc_all['Balance'], errors='coerce')
+        working_count = (~numeric_balances.isna()).sum()
+        total_count = len(tm_calc_all)
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Trunk Mains", total_count)
+        with col2:
+            st.metric("Working Trunk Main", working_count)
+        with col3:
+            st.metric("Issues Detected", total_count - working_count)
+
+        my_summarised = tm_calc_all[tm_calc_all['Balance'] != 'Meter is not working']
+
+
+    else:
+        st.warning("No data was successfully processed from any files.")
+        st.info(
+            "Please check that your CSV files contain 'Date of Reading' column and flow meter columns with 'in'/'out' in their names.")
+
+
+
+with tab3:
+    st.write('TM Charting')
+    if not my_summarised.empty:
+        # Ensure Balance is numeric
+        my_summarised['Balance'] = pd.to_numeric(my_summarised['Balance'], errors='coerce')
+
+        # Sort by balance value
+        chart_data = my_summarised.sort_values(by='Balance', ascending=False)
+
+        st.subheader('Bar Chart of Trunk Main Balances')
+        st.bar_chart(chart_data.set_index('scheme_name')['Balance'])
+
+        # Optional: Use matplotlib for labeled bars
+        fig, ax = plt.subplots(figsize=(12, 6))
+        bars = ax.bar(chart_data['scheme_name'], chart_data['Balance'])
+
+        ax.set_title('Trunk Main Balance by Scheme')
+        ax.set_xlabel('Scheme Name')
+        ax.set_ylabel('Balance')
+        ax.tick_params(axis='x', rotation=45)
+
+        # Add data labels on bars
+        for bar in bars:
+            height = bar.get_height()
+            ax.annotate(f'{height:.1f}', xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 3), textcoords="offset points", ha='center', va='bottom')
+
+        st.pyplot(fig)
+
+        # --- New Addition: Reliability Analysis ---
+        st.markdown("---")
+        st.subheader("🌐 Top 20 Most Reliable Trunk Mains by CV")
+
+        trunk_main_reliability = []
+        for filename in file_data_stored:
+            try:
+                df = pd.read_csv(os.path.join(data_dir, filename))
+                meter_cols = [col for col in df.columns if any(x in col.upper() for x in ['(CUS)', '(IN)', '(OUT)'])]
+                meter_df = df[meter_cols].copy()
+                stats = meter_df.describe().T
+                stats['Coefficient of Variation (%)'] = np.where(stats['mean'] != 0,
+                                                                 (stats['std'] / stats['mean']) * 100,
+                                                                 np.nan)
+                avg_cv = stats['Coefficient of Variation (%)'].mean()
+                trunk_main_reliability.append({
+                    'Trunk Main': filename.replace('.csv', ''),
+                    'Average CV (%)': avg_cv
+                })
+            except Exception as e:
+                trunk_main_reliability.append({
+                    'Trunk Main': filename.replace('.csv', ''),
+                    'Average CV (%)': np.nan,
+                    'Error': str(e)
+                })
+
+        reliability_df = pd.DataFrame(trunk_main_reliability)
+        reliability_df_sorted = reliability_df.sort_values(by='Average CV (%)')
+        top_20 = reliability_df_sorted.head(20)
+        styled_df = top_20.style.background_gradient(subset=['Average CV (%)'], cmap='Greens')
+        st.dataframe(styled_df, use_container_width=True)
+
+        st.subheader("🌍 Visualisation of CV Reliability")
+        fig2, ax2 = plt.subplots(figsize=(10, 8))
+        plot_data = top_20.sort_values(by='Average CV (%)')
+        bars = ax2.barh(plot_data['Trunk Main'], plot_data['Average CV (%)'], color='seagreen')
+        ax2.set_xlabel('Average Coefficient of Variation (%)')
+        ax2.set_title('Top 20 Most Reliable Trunk Mains')
+        for bar in bars:
+            width = bar.get_width()
+            ax2.text(width + 1, bar.get_y() + bar.get_height()/2, f'{width:.1f}%', va='center')
+        st.pyplot(fig2)
+    else:
+        st.warning("No valid balances available to chart.")
+###########################################Version 2 with filter , working but really slow:
+import numpy as np
+import streamlit as st
+import pandas as pd
+import time
+import os
+import datetime
+import seaborn as sns
+import matplotlib.pyplot as plt
+from datetime import timedelta
+import re
+
+st.set_page_config(layout="wide",
+                   page_title='Trunk Main Analysis',
+                   initial_sidebar_state="expanded",
+                   page_icon="💧")
+
+st.subheader('Trunk Main Analysis')
+st.markdown('---' * 20)
+
+tab2, tab3, tab4, tab5 = st.tabs(
+    ['Trunk Main Balance Calculation - Import', 'Trunk Main Balance Calculation - All', 'Predictive Modelling',
+     'Chart analysis'])
+
+# Load region mapping
+region_map_path = 'my_tm_region.csv'
+if os.path.exists(region_map_path):
+    region_df = pd.read_csv(region_map_path)
+    region_df['File'] = region_df['TMA Ref'].astype(str) + '.csv'
+    region_dict = dict(zip(region_df['File'], region_df['Region']))
+else:
+    st.sidebar.warning("Region mapping file not found. Region filter disabled.")
+    region_df = pd.DataFrame()
+    region_dict = {}
+
+with tab2:
+    data_dir = 'Trunkmain data'
+    if not os.path.exists(data_dir):
+        st.error(f"Directory '{data_dir}' not found. Please ensure the data directory exists.")
+        st.stop()
+
+    try:
+        file_data_stored = [f for f in os.listdir(data_dir) if f.endswith('.csv')]
+        if not file_data_stored:
+            st.warning(f"No CSV files found in '{data_dir}' directory.")
+            st.stop()
+    except Exception as e:
+        st.error(f"Error reading directory: {str(e)}")
+        st.stop()
+
+    st.sidebar.subheader("Analysis Parameters")
+
+    # Sidebar Region Filter
+    if not region_df.empty:
+        all_regions = sorted(region_df['Region'].unique())
+        selected_regions = st.sidebar.multiselect("Filter by Region", all_regions, default=all_regions)
+        file_data_stored = [f for f in file_data_stored if region_dict.get(f) in selected_regions]
+
+    # Initialize the consolidated dataframe outside the loop
+    tm_calc_all = pd.DataFrame()
+
+    # Add sidebar controls (these should be outside the loop)
+    st.sidebar.subheader("Analysis Parameters")
+
+    # We'll use a sample file to get date ranges, or use default values
+    sample_dates = None
+    try:
+        sample_file = pd.read_csv(os.path.join(data_dir, file_data_stored[0]))
+        if 'Date of Reading' in sample_file.columns:
+            sample_file['Date of Reading'] = pd.to_datetime(sample_file['Date of Reading'], dayfirst=True,
+                                                            errors='coerce')
+            sample_dates = sample_file['Date of Reading'].dropna()
+    except:
+        pass
+
+    # Set default date range
+    if sample_dates is not None and not sample_dates.empty:
+        default_start = sample_dates.min().date()
+        default_end = sample_dates.max().date()
+    else:
+        default_start = datetime.date.today() - timedelta(days=365)
+        default_end = datetime.date.today()
+
+    start_date = st.sidebar.date_input(
+        "Filter Start Date",
+        value=default_start,
+    )
+    end_date = st.sidebar.date_input(
+        "Filter End Date",
+        value=default_end,
+    )
+
+    st.sidebar.markdown('---' * 20)
+
+    # Interval slider in the sidebar
+    interval_days = st.sidebar.slider(
+        "Select Interval (Days)",
+        min_value=30,
+        max_value=720,
+        step=30,
+        value=30,
+    )
+
+    computation_level = st.sidebar.radio(
+        ':rainbow[Choose Computation Level]',
+        ['Base Computation', 'Force Computation'],
+        captions=[
+            'This computes only if all the meters have data',
+            'This forces computation irrespective of whether a meter(s) is working'
+        ]
+    )
+
+    st.write(f':rainbow[Computation Type: {computation_level}]')
+    st.write(f"Processing {len(file_data_stored)} files...")
+
+    # Progress bar
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    # Process each file
+    for file_idx, filename in enumerate(file_data_stored):
+        try:
+            status_text.text(f'Processing {filename}... ({file_idx + 1}/{len(file_data_stored)})')
+            progress_bar.progress((file_idx + 1) / len(file_data_stored))
+
+            sub_tm_name = filename.replace('.csv', '')
+            path_file = os.path.join(data_dir, filename)
+
+            # Read CSV file into a dataframe
+            df = pd.read_csv(path_file)
+
+            # Validate required columns
+            if 'Date of Reading' not in df.columns:
+                st.warning(f"File '{filename}' does not contain 'Date of Reading' column. Skipping...")
+                continue
+
+            # Clean and parse datetime column
+            df['Date of Reading'] = pd.to_datetime(df['Date of Reading'], dayfirst=True, errors='coerce')
+            df = df.dropna(subset=['Date of Reading'])  # Remove invalid dates
+
+            if df.empty:
+                st.warning(f"File '{filename}' has no valid date entries. Skipping...")
+                continue
+
+            df = df.sort_values('Date of Reading').reset_index(drop=True)
+
+            # Apply date filter on dataframe
+            filtered_df = df[
+                (df['Date of Reading'] >= pd.to_datetime(start_date)) &
+                (df['Date of Reading'] <= pd.to_datetime(end_date))
+                ]
+
+            if filtered_df.empty:
+                st.warning(f"No data in date range for file '{filename}'. Skipping...")
+                continue
+
+            # Create a copy of the filtered DataFrame
+            base_df = filtered_df.copy()
+            base_df_columns = base_df.columns
+
+            # Select relevant columns (with "in" / "out" or "date")
+            col_names_selected = [
+                col for col in base_df_columns
+                if 'in' in col.lower() or 'out' in col.lower() or 'date' in col.lower() or 'cus' in col.lower()
+            ]
+
+            if len(col_names_selected) <= 1:  # Only date column
+                st.warning(f"No flow meter columns found in '{filename}'. Skipping...")
+                continue
+
+            selected_df = base_df[col_names_selected].copy()
+
+            # Parse and extract date column
+            date_column = [col for col in selected_df.columns if 'date' in col.lower()]
+            if date_column:
+                selected_df['date'] = selected_df[date_column[0]].dt.date
+            else:
+                st.warning(f"No date column found in '{filename}'. Skipping...")
+                continue
+
+            # Initialize variables for summarization
+            start_date_filter = pd.to_datetime(start_date)
+            summarised_final_result = pd.DataFrame()
+
+            # Summarize data based on intervals
+            while start_date_filter <= pd.to_datetime(end_date):
+                current_end_date = start_date_filter + timedelta(days=interval_days)
+                filtering_data = selected_df[
+                    (selected_df['date'] >= start_date_filter.date()) &
+                    (selected_df['date'] <= current_end_date.date())
+                    ]
+
+                if not filtering_data.empty:
+                    # Only include numeric columns for statistics
+                    numeric_cols = filtering_data.select_dtypes(include=[np.number]).columns
+                    if len(numeric_cols) > 0:
+                        sub_data_summarised = filtering_data[numeric_cols].describe()
+                        mean_result = sub_data_summarised.loc['mean']
+
+                        # Convert summary to a DataFrame
+                        summary_df = pd.DataFrame(mean_result).T
+                        summary_df['Period'] = f'{start_date_filter.date()} to {current_end_date.date()}'
+                        summarised_final_result = pd.concat([summarised_final_result, summary_df], ignore_index=True)
+
+                start_date_filter = current_end_date + timedelta(days=1)
+
+            if summarised_final_result.empty:
+                st.warning(f"No data to summarize for '{filename}'. Skipping...")
+                continue
+
+            # Finalize summarised dataframe
+            summarised_final_result.columns = [
+                col.capitalize() if col != 'Period' else col
+                for col in summarised_final_result.columns
+            ]
+
+            # Remove date columns from summary
+            date_columns = [i for i in summarised_final_result.columns if 'date' in i.lower()]
+            if date_columns:
+                summarised_final_result = summarised_final_result.drop(date_columns, axis=1)
+
+            # Exploring the data for the summarised result of the initial balance summary
+            summary_of_summarised = summarised_final_result.drop('Period', axis=1, errors='ignore')
+            cols_summarised = list(summary_of_summarised.columns)
+            result_df_final = {}
+            in_result = []
+            in_meters_status = []
+            out_result = []
+            out_meters_status = []
+
+            for col in cols_summarised:
+                mean_val = summary_of_summarised[col].mean()
+
+                if re.search(r'\(in\)', col, re.IGNORECASE):  # Case-insensitive match
+                    result_df_final[col] = mean_val
+                    in_result.append(mean_val)
+                    if pd.isna(mean_val):
+                        in_meters_status.append(f'{col} - not working')
+                    else:
+                        in_meters_status.append(f'{col} - working')
+                else:
+                    # Assume outflow columns (multiply by -1 for balance calculation)
+                    adjusted_val = mean_val * -1 if not pd.isna(mean_val) else mean_val
+                    result_df_final[col] = adjusted_val
+                    out_result.append(adjusted_val)
+                    if pd.isna(mean_val):
+                        out_meters_status.append(f'{col} - not working')
+                    else:
+                        out_meters_status.append(f'{col} - working')
+
+            # Handle computation level
+            if computation_level == 'Base Computation':
+                # Only compute if all meters have data
+                in_flow_bal = np.sum(in_result) if in_result and not any(pd.isna(in_result)) else np.nan
+                out_flow_bal = np.sum(out_result) if out_result and not any(pd.isna(out_result)) else np.nan
+            else:
+                # Force computation (ignore NaN values)
+                in_flow_bal = np.nansum(in_result) if in_result else 0
+                out_flow_bal = np.nansum(out_result) if out_result else 0
+
+            # Calculate balance
+            if pd.isna(in_flow_bal) or pd.isna(out_flow_bal):
+                bal_figure = np.nan
+            else:
+                bal_figure = round(in_flow_bal + out_flow_bal, 3)
+
+            # Create conclusive balance dataframe
+            conclusive_df_balance = pd.DataFrame(result_df_final, index=[0])
+
+            if pd.isna(bal_figure):
+                balance_status = "Meter is not working"
+            else:
+                balance_status = bal_figure
+
+            conclusive_df_balance['Balance'] = balance_status
+            conclusive_df_balance['scheme_name'] = sub_tm_name
+
+            # Extract only the columns we need for the consolidated view
+            concluded_df = conclusive_df_balance[['scheme_name', 'Balance']].copy()
+
+            # Append to consolidated dataframe
+            tm_calc_all = pd.concat([tm_calc_all, concluded_df], ignore_index=True)
+
+            # Format results for display
+            in_bal_calc = ('A meter or two computing the inlet flow have issues'
+                           if pd.isna(in_flow_bal) else round(in_flow_bal, 3))
+            out_bal_calc = ('A meter or two computing the outlet flow have issues'
+                            if pd.isna(out_flow_bal) else round(out_flow_bal, 3))
+            bal_result = ("A meter or two do not have any data, making the balance computation inconclusive. "
+                          "You can still 'Force Computation' to calculate the balance nevertheless"
+                          if pd.isna(bal_figure) else bal_figure)
+
+
+
+
+        except Exception as e:
+            st.error(f'Error processing file "{filename}": {str(e)}')
+            continue
+
+    # Clear progress indicators
+    progress_bar.empty()
+    status_text.empty()
+
+    # Display consolidated results
+    if not tm_calc_all.empty:
+        st.markdown('## 📊 Consolidated Results - All Trunk Mains')
+        st.markdown(f'#### Summary of {len(tm_calc_all)} Trunk Main(s)')
+        st.dataframe(tm_calc_all, use_container_width=True)
+
+        # Summary statistics
+        numeric_balances = pd.to_numeric(tm_calc_all['Balance'], errors='coerce')
+        working_count = (~numeric_balances.isna()).sum()
+        total_count = len(tm_calc_all)
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Trunk Mains", total_count)
+        with col2:
+            st.metric("Working Trunk Main", working_count)
+        with col3:
+            st.metric("Issues Detected", total_count - working_count)
+
+        my_summarised = tm_calc_all[tm_calc_all['Balance'] != 'Meter is not working']
+
+
+    else:
+        st.warning("No data was successfully processed from any files.")
+        st.info(
+            "Please check that your CSV files contain 'Date of Reading' column and flow meter columns with 'in'/'out' in their names.")
+
+
+
+with tab3:
+    st.write('TM CHARTING')
+    if not my_summarised.empty:
+        my_summarised['Balance'] = pd.to_numeric(my_summarised['Balance'], errors='coerce')
+        chart_data = my_summarised.sort_values(by='Balance', ascending=False)
+
+        st.subheader('Bar Chart of Trunk Main Balances')
+        st.bar_chart(chart_data.set_index('scheme_name')['Balance'])
+
+        fig, ax = plt.subplots(figsize=(12, 6))
+        bars = ax.bar(chart_data['scheme_name'], chart_data['Balance'])
+        ax.set_title('Trunk Main Balance by Scheme')
+        ax.set_xlabel('Scheme Name')
+        ax.set_ylabel('Balance')
+        ax.tick_params(axis='x', rotation=45)
+        for bar in bars:
+            height = bar.get_height()
+            ax.annotate(f'{height:.1f}', xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 3), textcoords="offset points", ha='center', va='bottom')
+        st.pyplot(fig)
+
+        # Reliability Analysis by CV
+        st.markdown("---")
+        st.subheader("🌐 Top 20 Most Reliable Trunk Mains by CV")
+
+        trunk_main_reliability = []
+        for filename in file_data_stored:
+            try:
+                df = pd.read_csv(os.path.join(data_dir, filename))
+                meter_cols = [col for col in df.columns if any(x in col.upper() for x in ['(CUS)', '(IN)', '(OUT)'])]
+                meter_df = df[meter_cols].copy()
+                stats = meter_df.describe().T
+                stats['Coefficient of Variation (%)'] = np.where(stats['mean'] != 0,
+                                                                 (stats['std'] / stats['mean']) * 100,
+                                                                 np.nan)
+                avg_cv = stats['Coefficient of Variation (%)'].mean()
+                trunk_main_reliability.append({
+                    'Trunk Main': filename.replace('.csv', ''),
+                    'Average CV (%)': avg_cv,
+                    'Region': region_dict.get(filename, 'Unknown')
+                })
+            except Exception as e:
+                trunk_main_reliability.append({
+                    'Trunk Main': filename.replace('.csv', ''),
+                    'Average CV (%)': np.nan,
+                    'Error': str(e)
+                })
+
+        reliability_df = pd.DataFrame(trunk_main_reliability)
+        reliability_df_sorted = reliability_df.sort_values(by='Average CV (%)')
+        top_20 = reliability_df_sorted.head(20)
+
+        styled_df = top_20.style.background_gradient(subset=['Average CV (%)'], cmap='Greens')
+        st.dataframe(styled_df, use_container_width=True)
+
+        st.subheader("🌍 Visualisation of CV Reliability")
+        fig2, ax2 = plt.subplots(figsize=(10, 8))
+        plot_data = top_20.sort_values(by='Average CV (%)')
+        bars = ax2.barh(plot_data['Trunk Main'], plot_data['Average CV (%)'], color='seagreen')
+        ax2.set_xlabel('Average Coefficient of Variation (%)')
+        ax2.set_title('Top 20 Most Reliable Trunk Mains')
+        for bar in bars:
+            width = bar.get_width()
+            ax2.text(width + 1, bar.get_y() + bar.get_height()/2, f'{width:.1f}%', va='center')
+        st.pyplot(fig2)
+    else:
+        st.warning("No valid balances available to chart.")
+
+
+ ###################VERSION 3 CODE NOW FASTER AND WORKING BUT THE DATA FOR METER NOT WORKING INS NOT WORKING:
+ import numpy as np
+import streamlit as st
+import pandas as pd
+import os
+import datetime
+import matplotlib.pyplot as plt
+from datetime import timedelta
+import re
+
+st.set_page_config(layout="wide", page_title='Trunk Main Analysis', initial_sidebar_state="expanded", page_icon="💧")
+st.subheader('Trunk Main Analysis')
+st.markdown('---' * 20)
+
+tab2, tab3, tab4, tab5 = st.tabs([
+    'Trunk Main Balance Calculation - Import',
+    'Trunk Main Balance Calculation - All',
+    'Predictive Modelling',
+    'Chart analysis'])
+
+# Load region mapping file
+@st.cache_data
+def load_region_map(path):
+    if os.path.exists(path):
+        df = pd.read_csv(path)
+        df['File'] = df['TMA Ref'].astype(str) + '.csv'
+        return dict(zip(df['File'], df['Region'])), df
+    return {}, pd.DataFrame()
+
+region_dict, region_df = load_region_map('my_tm_region.csv')
+
+@st.cache_data
+def load_csv(filepath):
+    try:
+        df = pd.read_csv(filepath)
+        return df
+    except Exception as e:
+        return None
+
+with tab2:
+    data_dir = 'Trunkmain data'
+    if not os.path.exists(data_dir):
+        st.error(f"Directory '{data_dir}' not found. Please ensure the data directory exists.")
+        st.stop()
+
+    file_data_stored = [f for f in os.listdir(data_dir) if f.endswith('.csv')]
+    if not file_data_stored:
+        st.warning(f"No CSV files found in '{data_dir}' directory.")
+        st.stop()
+
+    st.sidebar.subheader("Analysis Parameters")
+
+    if not region_df.empty:
+        all_regions = sorted(region_df['Region'].unique())
+        selected_regions = st.sidebar.multiselect("Filter by Region", all_regions, default=all_regions)
+        file_data_stored = [f for f in file_data_stored if region_dict.get(f) in selected_regions]
+
+    sample_file = load_csv(os.path.join(data_dir, file_data_stored[0]))
+    if sample_file is not None and 'Date of Reading' in sample_file.columns:
+        sample_file['Date of Reading'] = pd.to_datetime(sample_file['Date of Reading'], dayfirst=True, errors='coerce')
+        sample_dates = sample_file['Date of Reading'].dropna()
+        default_start = sample_dates.min().date()
+        default_end = sample_dates.max().date()
+    else:
+        default_start = datetime.date.today() - timedelta(days=365)
+        default_end = datetime.date.today()
+
+    start_date = pd.to_datetime(st.sidebar.date_input("Filter Start Date", value=default_start))
+    end_date = pd.to_datetime(st.sidebar.date_input("Filter End Date", value=default_end))
+    interval_days = st.sidebar.slider("Select Interval (Days)", min_value=30, max_value=720, step=30, value=30)
+
+    computation_level = st.sidebar.radio(':rainbow[Choose Computation Level]', ['Base Computation', 'Force Computation'])
+    st.write(f':rainbow[Computation Type: {computation_level}]')
+    st.write(f"Processing {len(file_data_stored)} files...")
+
+    tm_calc_all_rows = []
+    progress = st.progress(0)
+    for idx, filename in enumerate(file_data_stored):
+        df = load_csv(os.path.join(data_dir, filename))
+        if df is None or 'Date of Reading' not in df.columns:
+            continue
+
+        df['Date of Reading'] = pd.to_datetime(df['Date of Reading'], dayfirst=True, errors='coerce')
+        df = df.dropna(subset=['Date of Reading'])
+        df = df[(df['Date of Reading'] >= pd.to_datetime(start_date)) & (df['Date of Reading'] <= pd.to_datetime(end_date))]
+
+        if df.empty:
+            continue
+
+        sub_tm_name = filename.replace('.csv', '')
+        meter_cols = [col for col in df.columns if any(x in col.lower() for x in ['in', 'out', 'cus'])]
+        if not meter_cols:
+            continue
+
+        summary = df[meter_cols].describe().T
+        summary = summary[['mean']].dropna()
+        inflow = pd.to_numeric(summary[summary.index.str.contains('(in)', case=False)]['mean'], errors='coerce').dropna()
+        outflow = pd.to_numeric(summary[~summary.index.str.contains('(in)', case=False)]['mean'], errors='coerce').dropna() * -1
+
+
+        if computation_level == 'Base Computation':
+          balance = round(inflow.sum() + outflow.sum(), 3) if not inflow.isna().any() and not outflow.isna().any() else np.nan
+
+
+        balance = balance if not pd.isna(balance) else 'Meter is not working'
+        tm_calc_all_rows.append({'scheme_name': sub_tm_name, 'Balance': balance})
+        progress.progress((idx + 1) / len(file_data_stored))
+
+    tm_calc_all = pd.DataFrame(tm_calc_all_rows)
+
+    if not tm_calc_all.empty:
+        st.markdown('## 📊 Consolidated Results - All Trunk Mains')
+        st.markdown(f'#### Summary of {len(tm_calc_all)} Trunk Main(s)')
+        st.dataframe(tm_calc_all, use_container_width=True)
+
+        numeric_balances = pd.to_numeric(tm_calc_all['Balance'], errors='coerce')
+        working_count = (~numeric_balances.isna()).sum()
+        total_count = len(tm_calc_all)
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Trunk Mains", total_count)
+        col2.metric("Working Trunk Main", working_count)
+        col3.metric("Issues Detected", total_count - working_count)
+
+        my_summarised = tm_calc_all[tm_calc_all['Balance'] != 'Meter is not working']
+    else:
+        my_summarised = pd.DataFrame()
+        st.warning("No data was successfully processed from any files.")
+
+with tab3:
+    st.write('TM CHARTING')
+    if not my_summarised.empty:
+        my_summarised['Balance'] = pd.to_numeric(my_summarised['Balance'], errors='coerce')
+        chart_data = my_summarised.sort_values(by='Balance', ascending=False)
+
+        st.subheader('Bar Chart of Trunk Main Balances')
+        st.bar_chart(chart_data.set_index('scheme_name')['Balance'])
+
+        fig, ax = plt.subplots(figsize=(12, 6))
+        bars = ax.bar(chart_data['scheme_name'], chart_data['Balance'])
+        ax.set_title('Trunk Main Balance by Scheme')
+        ax.set_xlabel('Scheme Name')
+        ax.set_ylabel('Balance')
+        ax.tick_params(axis='x', rotation=45)
+        for bar in bars:
+            height = bar.get_height()
+            ax.annotate(f'{height:.1f}', xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 3), textcoords="offset points", ha='center', va='bottom')
+        st.pyplot(fig)
+
+        st.markdown("---")
+        st.subheader("🌐 Top 20 Most Reliable Trunk Mains by CV")
+
+        reliability = []
+        for file in file_data_stored:
+            df = load_csv(os.path.join(data_dir, file))
+            if df is not None:
+                meter_cols = [col for col in df.columns if any(x in col.upper() for x in ['(CUS)', '(IN)', '(OUT)'])]
+                df = df[meter_cols]
+                stats = df.describe().T
+                stats['Coefficient of Variation (%)'] = (stats['std'] / stats['mean']) * 100
+                avg_cv = stats['Coefficient of Variation (%)'].mean()
+                reliability.append({
+                    'Trunk Main': file.replace('.csv', ''),
+                    'Average CV (%)': avg_cv,
+                    'Region': region_dict.get(file, 'Unknown')
+                })
+
+        reliability_df = pd.DataFrame(reliability).sort_values(by='Average CV (%)').head(20)
+        styled = reliability_df.style.background_gradient(subset=['Average CV (%)'], cmap='Greens')
+        st.dataframe(styled, use_container_width=True)
+
+        st.subheader("🌍 Visualisation of CV Reliability")
+        fig2, ax2 = plt.subplots(figsize=(10, 8))
+        bars = ax2.barh(reliability_df['Trunk Main'], reliability_df['Average CV (%)'], color='seagreen')
+        ax2.set_xlabel('Average Coefficient of Variation (%)')
+        ax2.set_title('Top 20 Most Reliable Trunk Mains')
+        for bar in bars:
+            width = bar.get_width()
+            ax2.text(width + 1, bar.get_y() + bar.get_height()/2, f'{width:.1f}%', va='center')
+        st.pyplot(fig2)
+    else:
+        st.warning("No valid balances available to chart.")

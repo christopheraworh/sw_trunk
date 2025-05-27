@@ -9,7 +9,9 @@ import datetime
 import seaborn as sns
 import matplotlib.pyplot as plt
 from datetime import timedelta
+import re
 
+# from jsonschema.benchmarks.const_vs_enum import value
 
 st.set_page_config(layout="wide",
                    page_title='Trunk Main Analysis',
@@ -69,13 +71,16 @@ with tab2:
                 value=30,
             )
 
+            computation_level  = st.sidebar.radio(':rainbow[Choose Computation Level]',
+                                                  ['***Base Computation***','***Force Computation***'],
+                                                  captions=['This computes only if all the meters have a bit of data produced by them', 'This forces computation irrespective of whether a meter(s) is working'])
             # Apply date filter on dataframe
             filtered_df = df[
                 (df['Date of Reading'] >= pd.to_datetime(start_date))
                 & (df['Date of Reading'] <= pd.to_datetime(end_date))
                 ]
 
-            st.write('**Base Balance Calculation**')
+
 
             # Create a copy of the filtered DataFrame
             base_df = filtered_df.copy()
@@ -84,7 +89,8 @@ with tab2:
             # Select relevant columns (with "in" / "out" or "date")
             col_names_selected = [
                 col for col in base_df_columns
-                if 'in' in col.lower() or 'out' in col.lower() or 'date' in col.lower()
+                if any(x in col.lower() for x in ['in', 'out', 'cus', 'date']) and 'balance' not in col.lower()
+
             ]
             selected_df = base_df[col_names_selected]
 
@@ -131,26 +137,54 @@ with tab2:
             cols_summarised = [i for i in summary_of_summarised.columns]
             result_df_final  = {}
             in_result = []
+            in_meters_status  = []
+
             out_result = []
+            out_meters_status  = []
             for i in cols_summarised:
-                if 'in' in i.lower():
+                if re.search(r'\(in\)', i):  # Case-sensitive match of exactly (in)
                     mean_result = summary_of_summarised[i].mean()
                     result_df_final[i] = mean_result
                     in_result.append(mean_result)
+                    if np.isnan(mean_result):
+                        in_meters_status.append(f'{i}  - not working')
+                    else:
+                        in_meters_status.append(f'{i} - working')
+
                 else:
                     mean_result = summary_of_summarised[i].mean() * -1
                     result_df_final[i] = mean_result
                     out_result.append(mean_result)
+                    if np.isnan(mean_result):
+                        out_meters_status.append(f'{i} - not working')
+                    else:
+                        out_meters_status.append(f'{i} - working')
+            # Creating the table of flow meter_ status
+            result_dict = {'in-meters':in_meters_status,'out-meters': out_meters_status}
+            def auto_dataframe(data_dict):
+                max_len = max(len(v) for v in data_dict.values())
+                for key, values in data_dict.items():
+                    if len(values) < max_len:
+                        data_dict[key] = values + [np.nan] * (max_len - len(values))
+                return pd.DataFrame(data_dict)
+
+
+
+            meters_table_summary  = auto_dataframe(result_dict)
             conclusive_df_balance = pd.DataFrame(result_df_final, index=[0])
             conclusive_df_balance['Balance']  = conclusive_df_balance.sum(axis=1)[0]
-            in_flow_bal = sum(in_result)
-            out_flow_bal= sum(out_result)
-            bal_result = in_flow_bal + out_flow_bal
+            in_flow_bal = round(sum(in_result),3)
+            out_flow_bal= round(sum(out_result),3)
+            bal_figure = round(in_flow_bal + out_flow_bal,3)
 
+            in_bal_calc = 'A meter or two computing the inlet flow have issues' if np.isnan(in_flow_bal) else in_flow_bal
+            out_bal_calc = 'A meter or two computing the outlet flow have issues' if np.isnan(out_flow_bal) else out_flow_bal
+            bal_result = "A meter or two have do not have any data, making the balance computation inconclusive. You can still 'Force Computation' to calculate the balance nevertheless " if np.isnan(
+                bal_figure) else bal_figure
 
             ######### Calculating summary table
-            inflow_column = [ i for i in summarised_final_result.columns if 'in' in i.lower()]
-            outflow_column = [ i for i in summarised_final_result.columns if 'out' in i.lower()]
+            inflow_column = [ i for i in summarised_final_result.columns if '(in)' in i.lower()]
+            outflow_column = [ i for i in summarised_final_result.columns if '(out)' in i.lower()]
 
             inflow_balance = summarised_final_result[inflow_column].sum(axis=1)
             outflow_balance = summarised_final_result[outflow_column].sum(axis =1)
@@ -160,7 +194,7 @@ with tab2:
             #####Data scalar Result
             inflow_average = round(in_flow_bal, 2)
             outflow_average = round(out_flow_bal, 2)
-            balance_average = round(bal_result,2)
+
 
 
 
@@ -169,33 +203,73 @@ with tab2:
             ####### Display inflow, outflow, and balance in Streamlit columns ##########
             border1, border2, border3, border4 = st.columns(4)
 
+            # st.markdown(f"""
+            # <div style="padding: 0.5em; background-color: #f0f2f6; border-left: 5px solid #4CAF50; font-weight: bold; font-size: 16px;">
+            #     Computation set to <span style="color: #4CAF50;">COMPUTATION MODE:  {computation_level}</span>
+            # </div>
+            # """, unsafe_allow_html=True)
+            st.write(f':rainbow[Computation Type  : {computation_level}]')
+            if computation_level.lower() == '***base computation***':
+                with border1:
+                    st.subheader('Trunk Main Uploaded')
+                    st.write(f'#### {uploaded_file.name.strip(".csv")}')
 
-            with border1:
-                st.subheader('Trunk Main Uploaded')
-                st.write(f'#### {uploaded_file.name.strip(".csv")}')
+                with border2:
+                    st.subheader('Inflow (m3/hr)')
+                    st.write(f'##### {in_bal_calc}')
 
-            with border2:
-                st.subheader('Inflow (m3/hr)')
-                st.write(f'### {inflow_average}')
+                with border3:
+                    st.subheader('Outflow (m3/hr)')
+                    st.write(f'##### {out_bal_calc}')
 
-            with border3:
-                st.subheader('Outflow (m3/hr)')
-                st.write(f'### {outflow_average}')
+                with border4:
+                    st.subheader('Balance (m3/hr)')
+                    st.write(f'##### {bal_result}')
 
-            with border4:
-                st.subheader('Balance (m3/hr)')
-                st.write(f'### {balance_average}')
+                st.markdown('---' * 20)
+                st.markdown(f'#### Balance Computed on a {interval_days} days')
 
-            st.markdown('---' * 20)
-            st.markdown(f'#### Balance Computed on a {interval_days} days')
-
-            st.dataframe(summarised_final_result)
+                st.dataframe(summarised_final_result)
 
 
 
-            st.markdown('---' * 20)
-            st.markdown(f'#### Inflow, Outflow and Balance Summary')
-            st.dataframe(conclusive_df_balance)
+                st.markdown('---' * 20)
+                st.markdown(f'#### Inflow, Outflow and Balance Summary')
+                if np.isnan(bal_figure):
+                    st.write(' The model can\'t  compute the  balance due to the follwoing non -working meters :')
+                    st.dataframe(meters_table_summary)
+                else:
+
+                    st.dataframe(conclusive_df_balance)
+            else:
+                with border1:
+                    st.subheader('Trunk Main Uploaded')
+                    st.write(f'#### {uploaded_file.name.strip(".csv")}')
+
+                with border2:
+                    st.subheader('Inflow (m3/hr)')
+                    st.write(f'##### {round(np.nansum(in_result),4)}')
+
+                with border3:
+                    st.subheader('Outflow (m3/hr)')
+                    st.write(f'##### {round(np.nansum(out_result),4)}')
+
+
+
+
+                with border4:
+                    st.subheader('Balance (m3/hr)')
+                    bal_forced  = round(conclusive_df_balance['Balance'][0],3)
+                    st.write(f'##### {bal_forced}')
+
+                st.markdown('---' * 20)
+                st.markdown(f'#### Balance Computed on a {interval_days} days')
+
+                st.dataframe(summarised_final_result)
+
+                st.markdown('---' * 20)
+                st.markdown(f'#### Inflow, Outflow and Balance Summary')
+                st.dataframe(conclusive_df_balance)
 
         except Exception as e:
             st.warning('Error processing the file. Please make sure it contains valid flow meter data.')
@@ -405,5 +479,3 @@ with tab5:
     # # Combine bar and text
     # st.altair_chart(chart + text, use_container_width=True)
     #
-
-
